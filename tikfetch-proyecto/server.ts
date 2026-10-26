@@ -94,7 +94,7 @@ app.post('/api/parse', async (req: Request, res: Response) => {
     if (!cleanUrl) {
       res.status(400).json({
         success: false,
-        error: 'El enlace proporcionado no parece ser una URL válida de TikTok (ejemplo: https://www.tiktok.com/@usuario/video/... o https://vm.tiktok.com/...)'
+        error: 'El enlace proporcionado no parece ser una URL válida de TikTok.'
       });
       return;
     }
@@ -118,15 +118,15 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       console.warn('Could not follow redirect, will proceed with original URL:', redirectErr);
     }
 
-    // Call RapidAPI TikTok Downloader
-    const rapidApiHost = process.env.RAPIDAPI_HOST || 'tiktok-video-downloader-api.p.rapidapi.com'; // Host predeterminado de la API seleccionada
-    const rapidApiEndpoint = `https://${rapidApiHost}/api/v1/social/autodl?url=${encodeURIComponent(finalUrl)}`;
+    // Call RapidAPI TikTok Downloader (según especificación oficial)
+    const rapidApiHost = 'tiktok-video-downloader-api.p.rapidapi.com';
+    const rapidApiEndpoint = `https://${rapidApiHost}/media?videoUrl=${encodeURIComponent(finalUrl)}`;
 
     const response = await fetch(rapidApiEndpoint, {
       method: 'GET',
       headers: {
-        'X-RapidAPI-Key': process.env.RAPIDAPI_KEY || '',
-        'X-RapidAPI-Host': rapidApiHost
+        'x-rapidapi-key': process.env.RAPIDAPI_KEY || '',
+        'x-rapidapi-host': rapidApiHost
       }
     });
 
@@ -135,69 +135,55 @@ app.post('/api/parse', async (req: Request, res: Response) => {
     }
 
     const json = await response.json();
+    
+    // Extraemos la URL de descarga oficial
+    const downloadUrl = json.downloadUrl || json.data?.downloadUrl || (typeof json === 'string' ? json : json.url);
 
-    // Adaptamos la lectura según la estructura de RapidAPI
-    const d = json.data || json;
-
-    if (!d) {
+    if (!downloadUrl) {
       res.status(422).json({
         success: false,
-        error: 'No se pudo procesar el video. Asegúrate de que el enlace sea público.'
+        error: 'No se pudo obtener la URL de descarga del video. Asegúrate de que sea público.'
       });
       return;
     }
 
-    // Helper to normalize relative or protocol-relative URLs
-    const fixUrl = (u?: string) => {
-      if (!u || typeof u !== 'string') return '';
-      if (u.startsWith('//')) return 'https:' + u;
-      return u;
-    };
-
-    const playUrl = fixUrl(d.play || d.video || d.hdplay);
-    const hdPlayUrl = fixUrl(d.hdplay || d.play || playUrl);
-
-    // Build normalized clean result
+    // Normalizamos el resultado para que la interfaz web lo lea perfectamente
     const result = {
-      id: d.id || String(Date.now()),
+      id: json.id || String(Date.now()),
       url: finalUrl,
-      title: d.title || d.description || 'Video de TikTok sin título',
-      cover: fixUrl(d.cover || d.origin_cover),
-      origin_cover: fixUrl(d.origin_cover || d.cover),
-      duration: d.duration || 0,
+      title: json.title || 'Video de TikTok sin título',
+      cover: json.cover || '',
+      origin_cover: json.cover || '',
+      duration: json.duration || 0,
       author: {
-        id: d.author?.id || '',
-        unique_id: d.author?.unique_id || 'usuario',
-        nickname: d.author?.nickname || 'Creador de TikTok',
-        avatar: fixUrl(d.author?.avatar)
+        id: '',
+        unique_id: json.author || 'usuario',
+        nickname: json.author || 'Creador de TikTok',
+        avatar: ''
       },
-      // Video streams
-      play: playUrl,
-      hdplay: hdPlayUrl,
-      wmplay: fixUrl(d.wmplay || playUrl),
-      size: d.size || 0,
-      hd_size: d.hd_size || d.size || 0,
-      // Audio stream
-      music: fixUrl(d.music),
+      play: downloadUrl,
+      hdplay: downloadUrl,
+      wmplay: downloadUrl,
+      size: 0,
+      hd_size: 0,
+      music: '',
       music_info: {
-        id: d.music_info?.id || '',
-        title: d.music_info?.title || 'Sonido original',
-        author: d.music_info?.author || d.author?.nickname || 'Artista',
-        play: fixUrl(d.music_info?.play || d.music),
-        cover: fixUrl(d.music_info?.cover)
+        id: '',
+        title: 'Sonido original',
+        author: 'Artista',
+        play: '',
+        cover: ''
       },
-      // Slide photo carousels (if photo mode)
-      images: Array.isArray(d.images) ? d.images.map((img: string) => fixUrl(img)) : [],
-      // Engagement statistics
+      images: [],
       stats: {
-        play_count: d.play_count || 0,
-        digg_count: d.digg_count || 0,
-        comment_count: d.comment_count || 0,
-        share_count: d.share_count || 0,
-        download_count: d.download_count || 0
+        play_count: 0,
+        digg_count: 0,
+        comment_count: 0,
+        share_count: 0,
+        download_count: 0
       },
-      create_time: d.create_time || 0,
-      region: d.region || ''
+      create_time: 0,
+      region: ''
     };
 
     res.json({
@@ -238,7 +224,7 @@ async function fetchMediaStream(targetUrl: string) {
   return res;
 }
 
-// 3. API: Proxy Download to force file attachment download in browser with automatic fallback
+// 3. API: Proxy Download to force file attachment download in browser
 app.get('/api/download', async (req: Request, res: Response) => {
   try {
     const mediaUrl = req.query.url as string;
