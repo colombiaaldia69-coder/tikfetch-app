@@ -118,50 +118,50 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       console.warn('Could not follow redirect, will proceed with original URL:', redirectErr);
     }
 
-    // Call TikWM API
-    const tikwmEndpoint = `https://www.tikwm.com/api/?url=${encodeURIComponent(finalUrl)}&hd=1`;
-    const response = await fetch(tikwmEndpoint, {
+    // Call RapidAPI TikTok Downloader
+    const rapidApiHost = process.env.RAPIDAPI_HOST || 'tiktok-video-downloader-api.p.rapidapi.com'; // Host predeterminado de la API seleccionada
+    const rapidApiEndpoint = `https://${rapidApiHost}/api/v1/social/autodl?url=${encodeURIComponent(finalUrl)}`;
+
+    const response = await fetch(rapidApiEndpoint, {
       method: 'GET',
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*'
+        'X-RapidAPI-Key': process.env.RAPIDAPI_KEY || '',
+        'X-RapidAPI-Host': rapidApiHost
       }
     });
 
     if (!response.ok) {
-      throw new Error(`TikWM server responded with status: ${response.status}`);
+      throw new Error(`RapidAPI server responded with status: ${response.status}`);
     }
 
     const json = await response.json();
 
-    if (json.code !== 0 || !json.data) {
-      // Sometimes it's a private video or expired link
-      const errorMsg = json.msg || 'No se pudo obtener la información del video.';
+    // Adaptamos la lectura según la estructura de RapidAPI
+    const d = json.data || json;
+
+    if (!d) {
       res.status(422).json({
         success: false,
-        error: `No se pudo procesar el video: ${errorMsg}. Asegúrate de que el video sea público.`
+        error: 'No se pudo procesar el video. Asegúrate de que el enlace sea público.'
       });
       return;
     }
-
-    const d = json.data;
 
     // Helper to normalize relative or protocol-relative URLs
     const fixUrl = (u?: string) => {
       if (!u || typeof u !== 'string') return '';
       if (u.startsWith('//')) return 'https:' + u;
-      if (u.startsWith('/')) return 'https://www.tikwm.com' + u;
       return u;
     };
 
-    const playUrl = fixUrl(d.play);
-    const hdPlayUrl = fixUrl(d.hdplay) || playUrl;
+    const playUrl = fixUrl(d.play || d.video || d.hdplay);
+    const hdPlayUrl = fixUrl(d.hdplay || d.play || playUrl);
 
     // Build normalized clean result
     const result = {
       id: d.id || String(Date.now()),
       url: finalUrl,
-      title: d.title || 'Video de TikTok sin título',
+      title: d.title || d.description || 'Video de TikTok sin título',
       cover: fixUrl(d.cover || d.origin_cover),
       origin_cover: fixUrl(d.origin_cover || d.cover),
       duration: d.duration || 0,
@@ -174,7 +174,7 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       // Video streams
       play: playUrl,
       hdplay: hdPlayUrl,
-      wmplay: fixUrl(d.wmplay),
+      wmplay: fixUrl(d.wmplay || playUrl),
       size: d.size || 0,
       hd_size: d.hd_size || d.size || 0,
       // Audio stream
@@ -220,7 +220,6 @@ async function fetchMediaStream(targetUrl: string) {
     'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1'
   ];
 
-  // Attempt 1: with TikTok Referer
   let res = await fetch(targetUrl, {
     headers: {
       'User-Agent': userAgents[0],
@@ -228,7 +227,6 @@ async function fetchMediaStream(targetUrl: string) {
     }
   });
 
-  // Attempt 2: if failed, try without referer
   if (!res.ok) {
     res = await fetch(targetUrl, {
       headers: {
@@ -255,22 +253,17 @@ app.get('/api/download', async (req: Request, res: Response) => {
 
     const safeFilename = requestedName.replace(/[^a-zA-Z0-9_.-]/g, '_');
 
-    // Fetch primary stream
     let upstreamRes = await fetchMediaStream(mediaUrl);
 
-    // If primary stream failed (e.g. 403 or 404 on hdplay CDN), automatically use fallbackUrl if provided
     if ((!upstreamRes.ok || !upstreamRes.body) && fallbackUrl && fallbackUrl.startsWith('http') && fallbackUrl !== mediaUrl) {
-      console.warn(`Primary mediaUrl failed with status ${upstreamRes.status}. Retrying with fallbackUrl...`);
       upstreamRes = await fetchMediaStream(fallbackUrl);
     }
 
     if (!upstreamRes.ok || !upstreamRes.body) {
-      // Don't set attachment header if failed so user doesn't get a corrupt file
-      res.status(upstreamRes.status).send('No se pudo descargar el archivo desde el servidor de TikTok. Intenta con la Opción 2.');
+      res.status(upstreamRes.status).send('No se pudo descargar el archivo desde el servidor de TikTok.');
       return;
     }
 
-    // Set download attachment headers
     res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
     res.setHeader('Content-Type', upstreamRes.headers.get('content-type') || mediaType);
 
@@ -281,7 +274,6 @@ app.get('/api/download', async (req: Request, res: Response) => {
 
     res.setHeader('Cache-Control', 'public, max-age=3600');
 
-    // Pipe web stream to express response
     const nodeStream = Readable.fromWeb(upstreamRes.body as any);
     nodeStream.pipe(res);
   } catch (err: any) {
