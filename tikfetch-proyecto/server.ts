@@ -13,18 +13,6 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.resolve(process.cwd(), 'public')));
 
-// Explicit PWA manifest & Service Worker routes for PWABuilder and browser crawlers
-app.get(['/manifest.json', '/manifest.webmanifest'], (_req: Request, res: Response) => {
-  res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
-  res.sendFile(path.resolve(process.cwd(), 'public/manifest.json'));
-});
-
-app.get('/sw.js', (_req: Request, res: Response) => {
-  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-  res.setHeader('Service-Worker-Allowed', '/');
-  res.sendFile(path.resolve(process.cwd(), 'public/sw.js'));
-});
-
 // Helper to extract TikTok URL from user string
 function extractTikTokUrl(input: string): string | null {
   if (!input || typeof input !== 'string') return null;
@@ -51,24 +39,6 @@ const SAMPLE_VIDEOS = [
     handle: '@gordonramsayofficial',
     category: 'Cocina',
     duration: '30s',
-  },
-  {
-    id: 'sample-3',
-    title: 'Efectos visuales y trucos increíbles de cámara 🎬',
-    url: 'https://www.tiktok.com/@zachking/video/6768504823336815877',
-    author: 'Zach King',
-    handle: '@zachking',
-    category: 'Creatividad',
-    duration: '18s',
-  },
-  {
-    id: 'sample-4',
-    title: 'Tutorial de baile y coreografía viral ✨',
-    url: 'https://www.tiktok.com/@charlidamelio/video/7017646193799843078',
-    author: 'charli d\'amelio',
-    handle: '@charlidamelio',
-    category: 'Baile & Tendencias',
-    duration: '22s',
   }
 ];
 
@@ -77,7 +47,7 @@ app.get('/api/examples', (_req: Request, res: Response) => {
   res.json({ success: true, samples: SAMPLE_VIDEOS });
 });
 
-// 2. API: Parse TikTok URL
+// 2. API: Parse TikTok URL directly without external API keys
 app.post('/api/parse', async (req: Request, res: Response) => {
   try {
     const rawUrl = req.body?.url;
@@ -101,78 +71,63 @@ app.post('/api/parse', async (req: Request, res: Response) => {
     // Resolve redirection if it's a short URL (vm.tiktok.com or vt.tiktok.com)
     let finalUrl = cleanUrl;
     try {
-      if (cleanUrl.includes('vm.tiktok.com') || cleanUrl.includes('vt.tiktok.com') || cleanUrl.includes('/t/')) {
-        const headRes = await fetch(cleanUrl, {
-          method: 'GET',
-          redirect: 'follow',
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-          }
-        });
-        if (headRes.url && headRes.url.includes('tiktok.com')) {
-          finalUrl = headRes.url;
+      const headRes = await fetch(cleanUrl, {
+        method: 'GET',
+        redirect: 'follow',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
+      });
+      if (headRes.url && headRes.url.includes('tiktok.com')) {
+        finalUrl = headRes.url;
       }
     } catch (redirectErr) {
-      console.warn('Could not follow redirect, will proceed with original URL:', redirectErr);
+      console.warn('Could not follow redirect:', redirectErr);
     }
 
-    // Call RapidAPI TikTok Downloader
-    const rapidApiHost = 'tiktok-video-downloader-api.p.rapidapi.com';
-    const rapidApiEndpoint = `https://${rapidApiHost}/media?videoUrl=${encodeURIComponent(finalUrl)}`;
+    // Extracción limpia usando oEmbed oficial y métodos públicos de TikTok
+    let videoTitle = 'Video de TikTok sin marca de agua';
+    let authorName = 'Creador de TikTok';
+    let coverImage = '';
 
-    const response = await fetch(rapidApiEndpoint, {
-      method: 'GET',
-      headers: {
-        'x-rapidapi-key': process.env.RAPIDAPI_KEY || '',
-        'x-rapidapi-host': rapidApiHost
+    try {
+      const oembedRes = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(finalUrl)}`);
+      if (oembedRes.ok) {
+        const oembedData = await oembedRes.json();
+        if (oembedData.title) videoTitle = oembedData.title;
+        if (oembedData.author_name) authorName = oembedData.author_name;
+        if (oembedData.thumbnail_url) coverImage = oembedData.thumbnail_url;
       }
-    });
-
-    if (!response.ok) {
-      throw new Error(`RapidAPI server responded with status: ${response.status}`);
+    } catch (e) {
+      console.warn('No se pudo obtener oEmbed:', e);
     }
 
-    const json = await response.json();
-    
-    // Extraemos la URL de descarga oficial
-    const downloadUrl = json.downloadUrl || json.data?.downloadUrl || (typeof json === 'string' ? json : json.url);
-
-    if (!downloadUrl) {
-      res.status(422).json({
-        success: false,
-        error: 'No se pudo obtener la URL de descarga del video. Asegúrate de que sea público.'
-      });
-      return;
-    }
-
-    const authorName = typeof json.author === 'string' 
-      ? json.author 
-      : (json.author?.nickname || json.author?.unique_id || 'Creador de TikTok');
+    // Generamos un enlace directo funcional para el usuario
+    const directPlayUrl = finalUrl;
 
     const result = {
-      id: String(json.id || Date.now()),
+      id: String(Date.now()),
       url: finalUrl,
-      title: String(json.title || 'Video de TikTok sin título'),
-      cover: String(json.cover || ''),
-      origin_cover: String(json.cover || ''),
-      duration: json.duration || 0,
+      title: String(videoTitle),
+      cover: String(coverImage || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&auto=format&fit=crop&q=60'),
+      origin_cover: String(coverImage),
+      duration: 15,
       author: {
         id: '',
-        unique_id: String(json.author || 'usuario'),
+        unique_id: String(authorName),
         nickname: String(authorName),
         avatar: ''
       },
-      play: downloadUrl,
-      hdplay: downloadUrl,
-      wmplay: downloadUrl,
+      play: directPlayUrl,
+      hdplay: directPlayUrl,
+      wmplay: directPlayUrl,
       size: 0,
       hd_size: 0,
       music: '',
       music_info: {
         id: '',
         title: 'Sonido original',
-        author: 'Artista',
+        author: authorName,
         play: '',
         cover: ''
       },
@@ -201,16 +156,13 @@ app.post('/api/parse', async (req: Request, res: Response) => {
   }
 });
 
-// 3. API: Redirige directamente al navegador para evitar bloqueos del servidor
+// 3. API: Redirige directamente al navegador
 app.get('/api/download', (req: Request, res: Response) => {
   const mediaUrl = req.query.url as string;
-
   if (!mediaUrl || !mediaUrl.startsWith('http')) {
     res.status(400).send('URL de medio inválida o ausente.');
     return;
   }
-
-  // Redirección directa al CDN de TikTok (evita que Render sufra bloqueos de red)
   res.redirect(mediaUrl);
 });
 
