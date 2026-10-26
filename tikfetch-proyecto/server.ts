@@ -1,7 +1,6 @@
 import express, { Request, Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
-import { Readable } from 'stream';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -147,12 +146,10 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       return;
     }
 
-    // Extraemos de forma segura el nombre del autor para evitar fallos en el navegador
     const authorName = typeof json.author === 'string' 
       ? json.author 
       : (json.author?.nickname || json.author?.unique_id || 'Creador de TikTok');
 
-    // Normalizamos el resultado garantizando que todo sea texto seguro para el frontend
     const result = {
       id: String(json.id || Date.now()),
       url: finalUrl,
@@ -204,75 +201,17 @@ app.post('/api/parse', async (req: Request, res: Response) => {
   }
 });
 
-// Helper to fetch media stream with automatic headers & fallbacks
-async function fetchMediaStream(targetUrl: string) {
-  const userAgents = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1'
-  ];
+// 3. API: Redirige directamente al navegador para evitar bloqueos del servidor
+app.get('/api/download', (req: Request, res: Response) => {
+  const mediaUrl = req.query.url as string;
 
-  let res = await fetch(targetUrl, {
-    headers: {
-      'User-Agent': userAgents[0],
-      'Referer': 'https://www.tiktok.com/'
-    }
-  });
-
-  if (!res.ok) {
-    res = await fetch(targetUrl, {
-      headers: {
-        'User-Agent': userAgents[1]
-      }
-    });
+  if (!mediaUrl || !mediaUrl.startsWith('http')) {
+    res.status(400).send('URL de medio inválida o ausente.');
+    return;
   }
 
-  return res;
-}
-
-// 3. API: Proxy Download to force file attachment download in browser
-app.get('/api/download', async (req: Request, res: Response) => {
-  try {
-    const mediaUrl = req.query.url as string;
-    const fallbackUrl = req.query.fallbackUrl as string;
-    const requestedName = (req.query.filename as string) || 'tiktok_video.mp4';
-    const mediaType = (req.query.type as string) || 'video/mp4';
-
-    if (!mediaUrl || !mediaUrl.startsWith('http')) {
-      res.status(400).send('URL de medio inválida o ausente.');
-      return;
-    }
-
-    const safeFilename = requestedName.replace(/[^a-zA-Z0-9_.-]/g, '_');
-
-    let upstreamRes = await fetchMediaStream(mediaUrl);
-
-    if ((!upstreamRes.ok || !upstreamRes.body) && fallbackUrl && fallbackUrl.startsWith('http') && fallbackUrl !== mediaUrl) {
-      upstreamRes = await fetchMediaStream(fallbackUrl);
-    }
-
-    if (!upstreamRes.ok || !upstreamRes.body) {
-      res.status(upstreamRes.status).send('No se pudo descargar el archivo desde el servidor de TikTok.');
-      return;
-    }
-
-    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
-    res.setHeader('Content-Type', upstreamRes.headers.get('content-type') || mediaType);
-
-    const contentLength = upstreamRes.headers.get('content-length');
-    if (contentLength) {
-      res.setHeader('Content-Length', contentLength);
-    }
-
-    res.setHeader('Cache-Control', 'public, max-age=3600');
-
-    const nodeStream = Readable.fromWeb(upstreamRes.body as any);
-    nodeStream.pipe(res);
-  } catch (err: any) {
-    console.error('Error in /api/download:', err);
-    if (!res.headersSent) {
-      res.status(500).send('Error al transferir el archivo.');
-    }
-  }
+  // Redirección directa al CDN de TikTok (evita que Render sufra bloqueos de red)
+  res.redirect(mediaUrl);
 });
 
 // Setup Vite or Static File Serving
