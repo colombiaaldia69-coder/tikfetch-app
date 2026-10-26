@@ -118,7 +118,7 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       console.warn('Could not follow redirect, will proceed with original URL:', redirectErr);
     }
 
-    // Call RapidAPI TikTok Downloader (según especificación oficial)
+    // Call RapidAPI TikTok Downloader
     const rapidApiHost = 'tiktok-video-downloader-api.p.rapidapi.com';
     const rapidApiEndpoint = `https://${rapidApiHost}/media?videoUrl=${encodeURIComponent(finalUrl)}`;
 
@@ -147,18 +147,23 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       return;
     }
 
-    // Normalizamos el resultado para que la interfaz web lo lea perfectamente
+    // Extraemos de forma segura el nombre del autor para evitar fallos en el navegador
+    const authorName = typeof json.author === 'string' 
+      ? json.author 
+      : (json.author?.nickname || json.author?.unique_id || 'Creador de TikTok');
+
+    // Normalizamos el resultado garantizando que todo sea texto seguro para el frontend
     const result = {
-      id: json.id || String(Date.now()),
+      id: String(json.id || Date.now()),
       url: finalUrl,
-      title: json.title || 'Video de TikTok sin título',
-      cover: json.cover || '',
-      origin_cover: json.cover || '',
+      title: String(json.title || 'Video de TikTok sin título'),
+      cover: String(json.cover || ''),
+      origin_cover: String(json.cover || ''),
       duration: json.duration || 0,
       author: {
         id: '',
-        unique_id: json.author || 'usuario',
-        nickname: json.author || 'Creador de TikTok',
+        unique_id: String(json.author || 'usuario'),
+        nickname: String(authorName),
         avatar: ''
       },
       play: downloadUrl,
