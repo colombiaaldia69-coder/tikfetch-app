@@ -25,14 +25,14 @@ app.get('/sw.js', (_req: Request, res: Response) => {
   res.sendFile(path.resolve(process.cwd(), 'public/sw.js'));
 });
 
-// Extrae la URL de TikTok del input
+// Helper to extract TikTok URL from user string
 function extractTikTokUrl(input: string): string | null {
   if (!input || typeof input !== 'string') return null;
   const match = input.match(/https?:\/\/(?:[a-zA-Z0-9_-]+\.)?(?:tiktok\.com|douyin\.com)[^\s"'>]+/i);
   return match ? match[0] : null;
 }
 
-// Ejemplos para la app
+// Preset examples for quick testing
 const SAMPLE_VIDEOS = [
   {
     id: 'sample-1',
@@ -54,11 +54,12 @@ const SAMPLE_VIDEOS = [
   }
 ];
 
+// 1. API: Get sample videos
 app.get('/api/examples', (_req: Request, res: Response) => {
   res.json({ success: true, samples: SAMPLE_VIDEOS });
 });
 
-// 2. API: Parse TikTok URL usando conectores alternativos estables
+// 2. API: Parse TikTok URL using official RapidAPI endpoint
 app.post('/api/parse', async (req: Request, res: Response) => {
   try {
     const rawUrl = req.body?.url;
@@ -79,75 +80,69 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       return;
     }
 
-    // Resolver redirección si es un enlace corto (vm.tiktok.com o vt.tiktok.com)
+    // Resolve redirection if it's a short URL (vm.tiktok.com or vt.tiktok.com)
     let finalUrl = cleanUrl;
     try {
-      const headRes = await fetch(cleanUrl, {
-        method: 'GET',
-        redirect: 'follow',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+      if (cleanUrl.includes('vm.tiktok.com') || cleanUrl.includes('vt.tiktok.com') || cleanUrl.includes('/t/')) {
+        const headRes = await fetch(cleanUrl, {
+          method: 'GET',
+          redirect: 'follow',
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+          }
+        });
+        if (headRes.url && headRes.url.includes('tiktok.com')) {
+          finalUrl = headRes.url;
         }
-      });
-      if (headRes.url && headRes.url.includes('tiktok.com')) {
-        finalUrl = headRes.url;
       }
     } catch (redirectErr) {
-      console.warn('Could not follow redirect:', redirectErr);
+      console.warn('Could not follow redirect, will proceed with original URL:', redirectErr);
     }
 
-    // Usar la API pública alternativa de Cobold / TTP / SnapTik de respaldo sin restricciones de IP
-    const backupRes = await fetch(`https://api.tikmate.app/api/lookup?url=${encodeURIComponent(finalUrl)}`, {
-      method: 'GET',
+    // Call RapidAPI TikTok Downloader using POST with JSON body
+    const rapidApiHost = 'tiktok-video-downloader-api.p.rapidapi.com';
+    const rapidApiEndpoint = `https://${rapidApiHost}/`;
+
+    const response = await fetch(rapidApiEndpoint, {
+      method: 'POST',
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Referer': 'https://tikmate.app/'
-      }
+        'content-type': 'application/json',
+        'x-rapidapi-key': process.env.RAPIDAPI_KEY || '',
+        'x-rapidapi-host': rapidApiHost
+      },
+      body: JSON.stringify({ url: finalUrl })
     });
 
-    let downloadUrl = '';
-    let coverImage = '';
-    let authorName = 'Creador de TikTok';
-    let videoTitle = 'Video de TikTok sin marca de agua';
-
-    if (backupRes.ok) {
-      const data = await backupRes.json();
-      if (data && data.token) {
-        // Tikmate devuelve un token para armar el enlace de descarga HD
-        downloadUrl = `https://tikmate.app/download/${data.token}/${data.id}.mp4?hd=1`;
-        coverImage = data.cover ? `https://tikmate.app/storage/${data.id}.jpg` : '';
-        if (data.author_name) authorName = data.author_name;
-        if (data.comment) videoTitle = data.comment;
-      }
+    if (!response.ok) {
+      throw new Error(`RapidAPI server responded with status: ${response.status}`);
     }
 
-    // Si el respaldo anterior falla, utilizamos un fallback con oEmbed y redirección limpia
+    const json = await response.json();
+    
+    const downloadUrl = json.downloadUrl || json.data?.downloadUrl || (typeof json === 'string' ? json : json.url);
+
     if (!downloadUrl) {
-      try {
-        const oembedRes = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(finalUrl)}`);
-        if (oembedRes.ok) {
-          const oembedData = await oembedRes.json();
-          if (oembedData.title) videoTitle = oembedData.title;
-          if (oembedData.author_name) authorName = oembedData.author_name;
-          if (oembedData.thumbnail_url) coverImage = oembedData.thumbnail_url;
-        }
-      } catch (e) {
-        console.warn('Fallback oEmbed error:', e);
-      }
-      // Enlace directo de respaldo
-      downloadUrl = finalUrl;
+      res.status(422).json({
+        success: false,
+        error: 'No se pudo obtener la URL de descarga del video. Asegúrate de que sea público.'
+      });
+      return;
     }
+
+    const authorName = typeof json.author === 'string' 
+      ? json.author 
+      : (json.author?.nickname || json.author?.unique_id || 'Creador de TikTok');
 
     const result = {
-      id: String(Date.now()),
+      id: String(json.id || Date.now()),
       url: finalUrl,
-      title: String(videoTitle),
-      cover: String(coverImage || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&auto=format&fit=crop&q=60'),
-      origin_cover: String(coverImage),
-      duration: 15,
+      title: String(json.title || 'Video de TikTok sin título'),
+      cover: String(json.cover || ''),
+      origin_cover: String(json.cover || ''),
+      duration: json.duration || 0,
       author: {
         id: '',
-        unique_id: String(authorName),
+        unique_id: String(json.author || 'usuario'),
         nickname: String(authorName),
         avatar: ''
       },
@@ -160,7 +155,7 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       music_info: {
         id: '',
         title: 'Sonido original',
-        author: authorName,
+        author: 'Artista',
         play: '',
         cover: ''
       },
@@ -189,8 +184,8 @@ app.post('/api/parse', async (req: Request, res: Response) => {
   }
 });
 
-// 3. API: Proxy de descarga directo
-app.get('/api/download', async (req: Request, res: Response) => {
+// 3. API: Redirige directamente al CDN para la descarga
+app.get('/api/download', (req: Request, res: Response) => {
   const mediaUrl = req.query.url as string;
 
   if (!mediaUrl || !mediaUrl.startsWith('http')) {
@@ -198,29 +193,7 @@ app.get('/api/download', async (req: Request, res: Response) => {
     return;
   }
 
-  try {
-    const videoResponse = await fetch(mediaUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Referer': 'https://tikmate.app/'
-      }
-    });
-
-    if (!videoResponse.ok) {
-      res.redirect(mediaUrl);
-      return;
-    }
-
-    res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Disposition', 'attachment; filename="tiktok-video.mp4"');
-
-    const arrayBuffer = await videoResponse.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    res.send(buffer);
-  } catch (err) {
-    console.error('Error proxying download:', err);
-    res.redirect(mediaUrl);
-  }
+  res.redirect(mediaUrl);
 });
 
 // Setup Vite or Static File Serving
