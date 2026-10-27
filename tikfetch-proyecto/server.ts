@@ -80,7 +80,7 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       return;
     }
 
-    // Petición POST oficial a SocialKit
+    // Petición POST oficial a SocialKit con múltiples variantes de cabeceras de autenticación
     const socialKitEndpoint = 'https://api.socialkit.dev/tiktok/download';
     const apiKey = process.env.SOCIALKIT_API_KEY || process.env.RAPIDAPI_KEY || '';
 
@@ -89,7 +89,8 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       headers: {
         'content-type': 'application/json',
         'x-api-key': apiKey,
-        'authorization': `Bearer ${apiKey}`
+        'x-access-key': apiKey,
+        'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify({ 
         url: cleanUrl,
