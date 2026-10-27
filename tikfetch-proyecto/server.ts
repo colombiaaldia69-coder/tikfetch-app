@@ -176,7 +176,7 @@ app.post('/api/parse', async (req: Request, res: Response) => {
   }
 });
 
-// 3. API: Proxy de descarga robusto que descarga el video en el servidor y lo envía como archivo real
+// 3. API: Proxy de descarga blindado que valida que el video pese más de unos KB antes de enviarlo
 app.get('/api/download', async (req: Request, res: Response) => {
   const mediaUrl = req.query.url as string;
 
@@ -189,17 +189,26 @@ app.get('/api/download', async (req: Request, res: Response) => {
     const videoRes = await fetch(mediaUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5',
         'Referer': 'https://www.tiktok.com/'
       }
     });
 
     if (!videoRes.ok) {
-      res.status(502).send('No se pudo obtener el archivo de video desde el servidor de origen.');
+      console.error(`Download upstream error status: ${videoRes.status}`);
+      res.redirect(mediaUrl);
       return;
     }
 
     const arrayBuffer = await videoRes.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
+
+    // Si el archivo pesa menos de 10 KB, es una respuesta falsa o un error HTML, redirigimos como respaldo
+    if (buffer.length < 10240) {
+      console.warn(`Buffer too small (${buffer.length} bytes), falling back to direct redirect.`);
+      res.redirect(mediaUrl);
+      return;
+    }
 
     res.setHeader('Content-Type', 'video/mp4');
     res.setHeader('Content-Disposition', 'attachment; filename="tiktok-video.mp4"');
@@ -207,8 +216,8 @@ app.get('/api/download', async (req: Request, res: Response) => {
 
     res.send(buffer);
   } catch (err) {
-    console.error('Error downloading media stream:', err);
-    res.status(500).send('Error interno al procesar la descarga del video.');
+    console.error('Error in download proxy:', err);
+    res.redirect(mediaUrl);
   }
 });
 
