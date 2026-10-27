@@ -1,263 +1,182 @@
-import { useState, useEffect } from 'react';
-import { Navbar } from './components/Navbar';
-import { HeroInput } from './components/HeroInput';
-import { VideoResult } from './components/VideoResult';
-import { HowItWorks } from './components/HowItWorks';
-import { FeaturesGrid } from './components/FeaturesGrid';
-import { FaqSection } from './components/FaqSection';
-import { Footer } from './components/Footer';
-import { HistoryDrawer } from './components/HistoryDrawer';
-import { QrModal } from './components/QrModal';
-import { OfflineIndicator } from './components/OfflineIndicator';
-import { PWAInstallButton } from './components/PWAInstallButton';
-import { TikTokVideoData, DownloadHistoryItem, SampleVideo } from './types';
+import express, { Request, Response } from 'express';
+import { createServer as createViteServer } from 'vite';
+import path from 'path';
+import dotenv from 'dotenv';
 
-const STORAGE_KEY = 'tikfetch_download_history_v1';
+dotenv.config();
 
-export default function App() {
-  const [url, setUrl] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [currentVideo, setCurrentVideo] = useState<TikTokVideoData | null>(null);
-  const [history, setHistory] = useState<DownloadHistoryItem[]>([]);
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-  const [samples, setSamples] = useState<SampleVideo[]>([]);
-  const [qrModal, setQrModal] = useState<{ isOpen: boolean; url: string; title: string }>({
-    isOpen: false,
-    url: '',
-    title: ''
-  });
+const app = express();
+const PORT = Number(process.env.PORT) || 3000;
+const isProduction = process.env.NODE_ENV === 'production';
 
-  // Load history from localStorage
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) {
-          setHistory(parsed);
-        }
-      }
-    } catch (e) {
-      console.warn('Could not read download history:', e);
-    }
-  }, []);
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static(path.resolve(process.cwd(), 'public')));
 
-  // Save history to localStorage
-  const saveHistoryItem = (video: TikTokVideoData) => {
-    try {
-      const isSlideshow = Array.isArray(video.images) && video.images.length > 0;
-      const newItem: DownloadHistoryItem = {
-        id: video.id,
-        title: video.title,
-        cover: video.cover,
-        authorNickname: video.author.nickname,
-        authorHandle: video.author.unique_id,
-        url: video.url,
-        playUrl: video.hdplay || video.play,
-        musicUrl: video.music,
-        duration: video.duration,
-        timestamp: Date.now(),
-        isSlideshow,
-        imageCount: video.images?.length
-      };
+app.get(['/manifest.json', '/manifest.webmanifest'], (_req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+  res.sendFile(path.resolve(process.cwd(), 'public/manifest.json'));
+});
 
-      setHistory((prev) => {
-        // Remove existing item with same id
-        const filtered = prev.filter((item) => item.id !== video.id);
-        const updated = [newItem, ...filtered].slice(0, 25);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-        return updated;
-      });
-    } catch (e) {
-      console.warn('Could not save to history:', e);
-    }
-  };
+app.get('/sw.js', (_req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Service-Worker-Allowed', '/');
+  res.sendFile(path.resolve(process.cwd(), 'public/sw.js'));
+});
 
-  // Load example samples
-  useEffect(() => {
-    fetch('/api/examples')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.success && Array.isArray(data.samples)) {
-          setSamples(data.samples);
-        }
-      })
-      .catch((err) => console.warn('Could not load samples:', err));
-  }, []);
+function extractTikTokUrl(input: string): string | null {
+  if (!input || typeof input !== 'string') return null;
+  const match = input.match(/https?:\/\/(?:[a-zA-Z0-9_-]+\.)?(?:tiktok\.com|douyin\.com)[^\s"'>]+/i);
+  return match ? match[0] : null;
+}
 
-  const handleSearch = async (targetUrl?: string) => {
-    const linkToParse = (targetUrl || url).trim();
-    if (!linkToParse) {
-      setErrorMessage('Por favor ingresa o pega un enlace de TikTok.');
+const SAMPLE_VIDEOS = [
+  {
+    id: 'sample-1',
+    title: 'Adorables perritos jugando en el parque 🐶',
+    url: 'https://www.tiktok.com/@scout2015/video/6718335390845095173',
+    author: 'Scout, Suki & Stella',
+    handle: '@scout2015',
+    category: 'Mascotas',
+    duration: '15s',
+  },
+  {
+    id: 'sample-2',
+    title: 'Receta rápida y deliciosa de pasta cremosa 🍝',
+    url: 'https://www.tiktok.com/@gordonramsayofficial/video/7036233285437885701',
+    author: 'Gordon Ramsay',
+    handle: '@gordonramsayofficial',
+    category: 'Cocina',
+    duration: '30s',
+  }
+];
+
+app.get('/api/examples', (_req: Request, res: Response) => {
+  res.json({ success: true, samples: SAMPLE_VIDEOS });
+});
+
+// API: Parse TikTok URL using SocialKit API
+app.post('/api/parse', async (req: Request, res: Response) => {
+  try {
+    const rawUrl = req.body?.url;
+    if (!rawUrl || typeof rawUrl !== 'string') {
+      res.status(400).json({ success: false, error: 'Por favor ingresa un enlace válido de TikTok.' });
       return;
     }
 
-    setIsLoading(true);
-    setErrorMessage(null);
-
-    try {
-      const response = await fetch('/api/parse', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ url: linkToParse })
-      });
-
-      const data = await response.json();
-
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || 'No se pudo procesar el enlace de TikTok.');
-      }
-
-      const videoData: TikTokVideoData = data.data;
-      setCurrentVideo(videoData);
-      saveHistoryItem(videoData);
-
-      // Smooth scroll to result
-      setTimeout(() => {
-        const el = document.getElementById('video-result-container');
-        if (el) {
-          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
-      }, 100);
-    } catch (err: any) {
-      console.error(err);
-      setErrorMessage(
-        err.message ||
-          'Ocurrió un error al intentar descargar el video. Por favor verifica que el enlace sea público e inténtalo de nuevo.'
-      );
-    } finally {
-      setIsLoading(false);
+    const cleanUrl = extractTikTokUrl(rawUrl.trim());
+    if (!cleanUrl) {
+      res.status(400).json({ success: false, error: 'El enlace proporcionado no parece ser una URL válida de TikTok.' });
+      return;
     }
-  };
 
-  const handleClearHistory = () => {
-    setHistory([]);
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch (e) {
-      console.warn(e);
-    }
-  };
+    const socialKitEndpoint = 'https://api.socialkit.dev/tiktok/download';
+    const apiKey = process.env.SOCIALKIT_API_KEY || process.env.RAPIDAPI_KEY || '';
 
-  const handleDeleteHistoryItem = (id: string) => {
-    setHistory((prev) => {
-      const updated = prev.filter((item) => item.id !== id);
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-      } catch (e) {
-        console.warn(e);
-      }
-      return updated;
+    const response = await fetch(socialKitEndpoint, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'x-access-key': apiKey,
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({ 
+        url: cleanUrl,
+        video_url: cleanUrl 
+      })
     });
-  };
 
-  const handleScrollToTop = () => {
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+    const responseText = await response.text();
 
-  const handleReset = () => {
-    setCurrentVideo(null);
-    setUrl('');
-    setErrorMessage(null);
-    handleScrollToTop();
-  };
+    if (!response.ok) {
+      console.error('SocialKit error response:', responseText);
+      throw new Error(`SocialKit error (${response.status}): ${responseText || 'Respuesta vacía del servidor'}`);
+    }
 
-  return (
-    <div className="min-h-screen flex flex-col bg-neutral-950 text-neutral-100 selection:bg-rose-500/30 selection:text-rose-200">
-      {/* Navigation */}
-      <Navbar
-        historyCount={history.length}
-        onOpenHistory={() => setIsHistoryOpen(true)}
-        onScrollToTop={handleScrollToTop}
-      />
+    let json;
+    try {
+      json = JSON.parse(responseText);
+    } catch (parseErr) {
+      console.error('Failed to parse JSON. Raw response was:', responseText);
+      throw new Error('La API de SocialKit no devolvió un JSON válido.');
+    }
+    
+    const dataObj = json.data || json;
+    const downloadUrl = dataObj.download_url || dataObj.url || dataObj.play || dataObj.hdplay || '';
 
-      <main className="flex-1">
-        {/* Hero & Search Form */}
-        <HeroInput
-          url={url}
-          setUrl={setUrl}
-          onSearch={handleSearch}
-          isLoading={isLoading}
-          errorMessage={errorMessage}
-          onClearError={() => setErrorMessage(null)}
-          samples={samples}
-        />
+    if (!downloadUrl) {
+      res.status(422).json({ success: false, error: 'No se pudo obtener la URL de descarga desde SocialKit.' });
+      return;
+    }
 
-        {/* Video Result View */}
-        {currentVideo && (
-          <div id="video-result-container" className="scroll-mt-20">
-            <VideoResult
-              video={currentVideo}
-              onOpenQrModal={(mediaUrl, title) =>
-                setQrModal({ isOpen: true, url: mediaUrl, title })
-              }
-              onReset={handleReset}
-            />
-          </div>
-        )}
+    const result = {
+      id: String(dataObj.id || Date.now()),
+      url: cleanUrl,
+      title: String(dataObj.title || dataObj.description || 'Video de TikTok sin título'),
+      cover: String(dataObj.cover || dataObj.thumbnail || ''),
+      origin_cover: String(dataObj.cover || dataObj.thumbnail || ''),
+      duration: dataObj.duration || 0,
+      author: {
+        id: '',
+        unique_id: String(dataObj.author?.username || dataObj.author || 'usuario'),
+        nickname: String(dataObj.author?.name || 'Creador de TikTok'),
+        avatar: String(dataObj.author?.avatar || '')
+      },
+      play: downloadUrl,
+      hdplay: downloadUrl,
+      wmplay: downloadUrl,
+      size: dataObj.size || 0,
+      hd_size: dataObj.hd_size || 0,
+      music: dataObj.music || '',
+      music_info: {
+        id: '',
+        title: 'Sonido original',
+        author: 'Artista',
+        play: '',
+        cover: ''
+      },
+      images: dataObj.images || [],
+      stats: {
+        play_count: dataObj.stats?.plays || dataObj.play_count || 0,
+        digg_count: dataObj.stats?.likes || dataObj.digg_count || 0,
+        comment_count: dataObj.stats?.comments || dataObj.comment_count || 0,
+        share_count: dataObj.stats?.shares || dataObj.share_count || 0,
+        download_count: 0
+      },
+      create_time: dataObj.create_time || 0,
+      region: dataObj.region || ''
+    };
 
-        {/* How It Works Guide */}
-        <HowItWorks />
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    console.error('Error in /api/parse:', error);
+    res.status(500).json({ success: false, error: error.message || 'Error interno al procesar el enlace con SocialKit.' });
+  }
+});
 
-        {/* Key Features Bento Grid */}
-        <FeaturesGrid />
+// Setup Vite or Static File Serving
+async function startServer() {
+  if (!isProduction) {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa'
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.resolve(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (_req: Request, res: Response) => {
+      res.sendFile(path.resolve(distPath, 'index.html'));
+    });
+  }
 
-        {/* PWA Mobile App Download Callout */}
-        <section className="py-12 border-t border-neutral-900 bg-gradient-to-b from-neutral-950 to-neutral-900/40">
-          <div className="max-w-4xl mx-auto px-4 sm:px-6">
-            <div className="p-6 sm:p-8 rounded-2xl bg-gradient-to-r from-neutral-900 via-neutral-900/90 to-neutral-850 border border-neutral-800 flex flex-col sm:flex-row items-center justify-between gap-6 shadow-xl">
-              <div className="text-center sm:text-left">
-                <span className="text-xs font-semibold tracking-wider uppercase text-rose-400">
-                  Aplicación Móvil Web
-                </span>
-                <h3 className="text-xl font-bold text-white mt-1 mb-2">
-                  Instala TikFetch en tu Teléfono
-                </h3>
-                <p className="text-xs sm:text-sm text-neutral-400 max-w-md">
-                  Guarda la aplicación en la pantalla de inicio de tu iPhone o Android. Acceso instantáneo sin descargas pesadas ni anuncios molestos.
-                </p>
-              </div>
-
-              <div className="shrink-0 w-full sm:w-auto">
-                <PWAInstallButton variant="full" />
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* FAQs */}
-        <FaqSection />
-      </main>
-
-      {/* Connectivity Indicator */}
-      <OfflineIndicator />
-
-      {/* Footer */}
-      <Footer onScrollToTop={handleScrollToTop} />
-
-      {/* History Drawer */}
-      <HistoryDrawer
-        isOpen={isHistoryOpen}
-        onClose={() => setIsHistoryOpen(false)}
-        history={history}
-        onSelectVideoUrl={(historyUrl) => {
-          setUrl(historyUrl);
-          handleSearch(historyUrl);
-        }}
-        onClearHistory={handleClearHistory}
-        onDeleteItem={handleDeleteHistoryItem}
-      />
-
-      {/* QR Code Modal for Mobile Downloads */}
-      <QrModal
-        isOpen={qrModal.isOpen}
-        onClose={() => setQrModal({ isOpen: false, url: '', title: '' })}
-        downloadUrl={qrModal.url}
-        title={qrModal.title}
-      />
-    </div>
-  );
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 TikFetch server listening on http://0.0.0.0:${PORT}`);
+  });
 }
+
+startServer().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});
