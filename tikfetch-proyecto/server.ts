@@ -99,9 +99,9 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       console.warn('Could not follow redirect, will proceed with original URL:', redirectErr);
     }
 
-    // Usamos el endpoint con la ruta correcta que evita el 404
+    // Usamos el endpoint raíz limpio que es el que admiten estas APIs de RapidAPI
     const rapidApiHost = 'tiktok-video-downloader-api.p.rapidapi.com';
-    const rapidApiEndpoint = `https://${rapidApiHost}/dl`; 
+    const rapidApiEndpoint = `https://${rapidApiHost}/`; 
 
     const response = await fetch(rapidApiEndpoint, {
       method: 'POST',
@@ -114,21 +114,21 @@ app.post('/api/parse', async (req: Request, res: Response) => {
     });
 
     if (!response.ok) {
-      // Intentamos como respaldo el endpoint raíz por si la API usa GET o el formato antiguo
-      const fallbackResponse = await fetch(`https://${rapidApiHost}/?url=${encodeURIComponent(finalUrl)}`, {
+      // Si el POST falla, probamos con el método GET estándar que aceptan la mayoría de estas APIs en RapidAPI
+      const getResponse = await fetch(`https://${rapidApiHost}/index?url=${encodeURIComponent(finalUrl)}`, {
         method: 'GET',
         headers: {
           'x-rapidapi-key': process.env.RAPIDAPI_KEY || '',
           'x-rapidapi-host': rapidApiHost
         }
       });
-      
-      if (!fallbackResponse.ok) {
+
+      if (!getResponse.ok) {
         throw new Error(`RapidAPI server responded with status: ${response.status}`);
       }
       
-      const fallbackJson = await fallbackResponse.json();
-      return handleApiResponse(fallbackJson, finalUrl, res);
+      const jsonGet = await getResponse.json();
+      return handleApiResponse(jsonGet, finalUrl, res);
     }
 
     const json = await response.json();
