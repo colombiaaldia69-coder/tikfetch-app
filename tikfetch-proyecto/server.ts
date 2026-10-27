@@ -1,4 +1,3 @@
-
 import express, { Request, Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
@@ -14,37 +13,26 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.resolve(process.cwd(), 'public')));
 
-// PWA manifest
-app.get(
-  ['/manifest.json', '/manifest.webmanifest'],
-  (_req: Request, res: Response) => {
-    res.setHeader(
-      'Content-Type',
-      'application/manifest+json; charset=utf-8'
-    );
-    res.sendFile(path.resolve(process.cwd(), 'public/manifest.json'));
-  }
-);
+// Explicit PWA manifest & Service Worker routes for PWABuilder and browser crawlers
+app.get(['/manifest.json', '/manifest.webmanifest'], (_req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+  res.sendFile(path.resolve(process.cwd(), 'public/manifest.json'));
+});
 
-// Service worker
 app.get('/sw.js', (_req: Request, res: Response) => {
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
   res.setHeader('Service-Worker-Allowed', '/');
   res.sendFile(path.resolve(process.cwd(), 'public/sw.js'));
 });
 
-// Validación básica de enlaces de TikTok
+// Helper to extract TikTok URL from user string
 function extractTikTokUrl(input: string): string | null {
   if (!input || typeof input !== 'string') return null;
-
-  const match = input.trim().match(
-    /https?:\/\/(?:[a-zA-Z0-9_-]+\.)?(?:tiktok\.com|douyin\.com)\/[^\s"'<>]+/i
-  );
-
-  return match ? match[0].replace(/[),.!?]+$/, '') : null;
+  const match = input.match(/https?:\/\/(?:[a-zA-Z0-9_-]+\.)?(?:tiktok\.com|douyin\.com)[^\s"'>]+/i);
+  return match ? match[0] : null;
 }
 
-// Videos de ejemplo para la interfaz
+// Preset examples for quick testing
 const SAMPLE_VIDEOS = [
   {
     id: 'sample-1',
@@ -53,7 +41,7 @@ const SAMPLE_VIDEOS = [
     author: 'Scout, Suki & Stella',
     handle: '@scout2015',
     category: 'Mascotas',
-    duration: '15s'
+    duration: '15s',
   },
   {
     id: 'sample-2',
@@ -62,169 +50,99 @@ const SAMPLE_VIDEOS = [
     author: 'Gordon Ramsay',
     handle: '@gordonramsayofficial',
     category: 'Cocina',
-    duration: '30s'
+    duration: '30s',
   }
 ];
 
-// GET /api/examples
+// 1. API: Get sample videos
 app.get('/api/examples', (_req: Request, res: Response) => {
-  res.json({
-    success: true,
-    samples: SAMPLE_VIDEOS
-  });
+  res.json({ success: true, samples: SAMPLE_VIDEOS });
 });
 
-// POST /api/parse
+// 2. API: Parse TikTok URL using SocialKit API
 app.post('/api/parse', async (req: Request, res: Response) => {
   try {
     const rawUrl = req.body?.url;
-
     if (!rawUrl || typeof rawUrl !== 'string') {
       res.status(400).json({
         success: false,
-        error: 'Por favor, ingresa un enlace de TikTok.'
+        error: 'Por favor ingresa un enlace válido de TikTok.'
       });
       return;
     }
 
-    const cleanUrl = extractTikTokUrl(rawUrl);
-
+    const cleanUrl = extractTikTokUrl(rawUrl.trim());
     if (!cleanUrl) {
       res.status(400).json({
         success: false,
-        error: 'El enlace no parece ser una URL válida de TikTok.'
+        error: 'El enlace proporcionado no parece ser una URL válida de TikTok.'
       });
       return;
     }
 
-    const apiKey = process.env.SOCIALKIT_API_KEY;
+    // Petición POST oficial a SocialKit
+    const socialKitEndpoint = 'https://api.socialkit.dev/tiktok/download';
+    const apiKey = process.env.SOCIALKIT_API_KEY || process.env.RAPIDAPI_KEY || '';
 
-    if (!apiKey) {
-      console.error('Falta configurar SOCIALKIT_API_KEY.');
-
-      res.status(500).json({
-        success: false,
-        error: 'El servidor no tiene configurada la clave de SocialKit.'
-      });
-      return;
-    }
-
-    const endpoint = 'https://api.socialkit.dev/tiktok/download';
-
-    const upstream = await fetch(endpoint, {
+    const response = await fetch(socialKitEndpoint, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'authorization': `Bearer ${apiKey}`
       },
-      body: JSON.stringify({
-        access_key: apiKey,
+      body: JSON.stringify({ 
         url: cleanUrl,
-        format: 'mp4',
-        quality: '480p'
-      }),
-      signal: AbortSignal.timeout(25000)
+        video_url: cleanUrl 
+      })
     });
 
-    const responseText = await upstream.text();
+    const responseText = await response.text();
 
-    let json: any;
+    if (!response.ok) {
+      console.error('SocialKit error response:', responseText);
+      throw new Error(`SocialKit error (${response.status}): ${responseText || 'Respuesta vacía del servidor'}`);
+    }
 
+    let json;
     try {
       json = JSON.parse(responseText);
-    } catch {
-      json = { message: responseText };
+    } catch (parseErr) {
+      console.error('Failed to parse JSON. Raw response was:', responseText);
+      throw new Error('La API de SocialKit no devolvió un JSON válido.');
     }
+    
+    // Extraemos los datos de la respuesta de SocialKit
+    const dataObj = json.data || json;
+    const downloadUrl = dataObj.download_url || dataObj.url || dataObj.play || dataObj.hdplay || '';
 
-    if (!upstream.ok) {
-      console.error('Error de SocialKit:', {
-        status: upstream.status,
-        response: json
-      });
-
-      res.status(502).json({
+    if (!downloadUrl) {
+      res.status(422).json({
         success: false,
-        error: 'SocialKit rechazó la solicitud.',
-        upstreamStatus: upstream.status,
-        details: json
+        error: 'No se pudo obtener la URL de descarga desde SocialKit.'
       });
       return;
     }
-
-    const data = json?.data ?? json;
-
-    // No confundir la URL original de TikTok con el archivo.
-    const downloadUrl =
-      data?.downloadUrl ??
-      data?.download_url ??
-      '';
-
-    if (
-      typeof downloadUrl !== 'string' ||
-      !/^https:\/\//i.test(downloadUrl)
-    ) {
-      console.error('Respuesta de SocialKit sin downloadUrl:', json);
-
-      res.status(502).json({
-        success: false,
-        error: 'SocialKit no devolvió una URL de descarga reconocida.'
-      });
-      return;
-    }
-
-    // Solo aceptamos una URL HTTPS para evitar esquemas peligrosos.
-    let parsedDownloadUrl: URL;
-
-    try {
-      parsedDownloadUrl = new URL(downloadUrl);
-    } catch {
-      res.status(502).json({
-        success: false,
-        error: 'SocialKit devolvió una URL de descarga inválida.'
-      });
-      return;
-    }
-
-    if (parsedDownloadUrl.protocol !== 'https:') {
-      res.status(502).json({
-        success: false,
-        error: 'El enlace de descarga debe utilizar HTTPS.'
-      });
-      return;
-    }
-
-    const author = data?.author ?? {};
-    const stats = data?.stats ?? {};
 
     const result = {
-      id: String(data?.id ?? Date.now()),
+      id: String(dataObj.id || Date.now()),
       url: cleanUrl,
-      title: String(
-        data?.title ??
-        data?.description ??
-        'Video de TikTok sin título'
-      ),
-      cover: String(data?.thumbnail ?? data?.thumbnailUrl ?? ''),
-      origin_cover: String(
-        data?.thumbnail ?? data?.thumbnailUrl ?? ''
-      ),
-      duration: data?.durationSeconds ?? data?.duration ?? 0,
+      title: String(dataObj.title || dataObj.description || 'Video de TikTok sin título'),
+      cover: String(dataObj.cover || dataObj.thumbnail || ''),
+      origin_cover: String(dataObj.cover || dataObj.thumbnail || ''),
+      duration: dataObj.duration || 0,
       author: {
-        id: String(author?.id ?? ''),
-        unique_id: String(
-          author?.username ?? author?.unique_id ?? 'usuario'
-        ),
-        nickname: String(
-          author?.name ?? author?.nickname ?? 'Creador de TikTok'
-        ),
-        avatar: String(author?.avatar ?? '')
+        id: '',
+        unique_id: String(dataObj.author?.username || dataObj.author || 'usuario'),
+        nickname: String(dataObj.author?.name || dataObj.author || 'Creador de TikTok'),
+        avatar: String(dataObj.author?.avatar || '')
       },
       play: downloadUrl,
       hdplay: downloadUrl,
       wmplay: downloadUrl,
-      size: Number(data?.fileSize ?? 0),
-      hd_size: Number(data?.fileSize ?? 0),
-      music: '',
+      size: dataObj.size || 0,
+      hd_size: dataObj.hd_size || 0,
+      music: dataObj.music || '',
       music_info: {
         id: '',
         title: 'Sonido original',
@@ -232,90 +150,65 @@ app.post('/api/parse', async (req: Request, res: Response) => {
         play: '',
         cover: ''
       },
-      images: [],
+      images: dataObj.images || [],
       stats: {
-        play_count: Number(stats?.plays ?? stats?.play_count ?? 0),
-        digg_count: Number(stats?.likes ?? stats?.digg_count ?? 0),
-        comment_count: Number(
-          stats?.comments ?? stats?.comment_count ?? 0
-        ),
-        share_count: Number(stats?.shares ?? stats?.share_count ?? 0),
+        play_count: dataObj.stats?.plays || dataObj.play_count || 0,
+        digg_count: dataObj.stats?.likes || dataObj.digg_count || 0,
+        comment_count: dataObj.stats?.comments || dataObj.comment_count || 0,
+        share_count: dataObj.stats?.shares || dataObj.share_count || 0,
         download_count: 0
       },
-      create_time: Number(data?.createTime ?? 0),
-      region: String(data?.region ?? '')
+      create_time: dataObj.create_time || 0,
+      region: dataObj.region || ''
     };
 
     res.json({
       success: true,
       data: result
     });
-  } catch (error: unknown) {
-    console.error('Error en /api/parse:', error);
-
-    const isTimeout =
-      error instanceof Error && error.name === 'TimeoutError';
-
-    res.status(isTimeout ? 504 : 500).json({
+  } catch (error: any) {
+    console.error('Error in /api/parse:', error);
+    res.status(500).json({
       success: false,
-      error: isTimeout
-        ? 'SocialKit tardó demasiado en responder.'
-        : 'No se pudo procesar el enlace. Revisa los registros del servidor.'
+      error: error.message || 'Error interno al procesar el enlace con SocialKit.'
     });
   }
 });
 
-// GET /api/download
+// 3. API: Redirige directamente al CDN para la descarga
 app.get('/api/download', (req: Request, res: Response) => {
-  const mediaUrl = req.query.url;
+  const mediaUrl = req.query.url as string;
 
-  if (typeof mediaUrl !== 'string') {
-    res.status(400).send('Falta la URL del video.');
-    return;
-  }
-
-  let parsedUrl: URL;
-
-  try {
-    parsedUrl = new URL(mediaUrl);
-  } catch {
-    res.status(400).send('La URL del video no es válida.');
-    return;
-  }
-
-  if (parsedUrl.protocol !== 'https:') {
-    res.status(400).send('Solo se permiten enlaces HTTPS.');
+  if (!mediaUrl || !mediaUrl.startsWith('http')) {
+    res.status(400).send('URL de medio inválida o ausente.');
     return;
   }
 
   res.redirect(mediaUrl);
 });
 
-// Vite en desarrollo y archivos compilados en producción
+// Setup Vite or Static File Serving
 async function startServer() {
   if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa'
     });
-
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(process.cwd(), 'dist');
-
     app.use(express.static(distPath));
-
     app.get('*', (_req: Request, res: Response) => {
       res.sendFile(path.resolve(distPath, 'index.html'));
     });
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`TikFetch server escuchando en el puerto ${PORT}`);
+    console.log(`🚀 TikFetch server listening on http://0.0.0.0:${PORT}`);
   });
 }
 
-startServer().catch((error) => {
-  console.error('No se pudo iniciar el servidor:', error);
+startServer().catch((err) => {
+  console.error('Failed to start server:', err);
   process.exit(1);
 });
