@@ -135,7 +135,7 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       author: {
         id: '',
         unique_id: String(dataObj.author?.username || dataObj.author || 'usuario'),
-        nickname: String(dataObj.author?.name || dataObj.author || 'Creador de TikTok'),
+        nickname: String(dataObj.author?.name || 'Creador de TikTok'),
         avatar: String(dataObj.author?.avatar || '')
       },
       play: downloadUrl,
@@ -176,8 +176,8 @@ app.post('/api/parse', async (req: Request, res: Response) => {
   }
 });
 
-// 3. API: Redirección directa al CDN limpio para asegurar compatibilidad total del reproductor
-app.get('/api/download', (req: Request, res: Response) => {
+// 3. API: Proxy de descarga robusto que descarga el video en el servidor y lo envía como archivo real
+app.get('/api/download', async (req: Request, res: Response) => {
   const mediaUrl = req.query.url as string;
 
   if (!mediaUrl || !mediaUrl.startsWith('http')) {
@@ -185,8 +185,31 @@ app.get('/api/download', (req: Request, res: Response) => {
     return;
   }
 
-  // Redirigimos directamente al CDN oficial de video limpio para que el reproductor lo abra sin trabas
-  res.redirect(mediaUrl);
+  try {
+    const videoRes = await fetch(mediaUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://www.tiktok.com/'
+      }
+    });
+
+    if (!videoRes.ok) {
+      res.status(502).send('No se pudo obtener el archivo de video desde el servidor de origen.');
+      return;
+    }
+
+    const arrayBuffer = await videoRes.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', 'attachment; filename="tiktok-video.mp4"');
+    res.setHeader('Content-Length', buffer.length);
+
+    res.send(buffer);
+  } catch (err) {
+    console.error('Error downloading media stream:', err);
+    res.status(500).send('Error interno al procesar la descarga del video.');
+  }
 });
 
 // Setup Vite or Static File Serving
