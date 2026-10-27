@@ -13,7 +13,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.resolve(process.cwd(), 'public')));
 
-// Explicit PWA manifest & Service Worker routes for PWABuilder and browser crawlers
+// Explicit PWA manifest & Service Worker routes
 app.get(['/manifest.json', '/manifest.webmanifest'], (_req: Request, res: Response) => {
   res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
   res.sendFile(path.resolve(process.cwd(), 'public/manifest.json'));
@@ -80,7 +80,6 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       return;
     }
 
-    // Petición POST oficial a SocialKit
     const socialKitEndpoint = 'https://api.socialkit.dev/tiktok/download';
     const apiKey = process.env.SOCIALKIT_API_KEY || process.env.RAPIDAPI_KEY || '';
 
@@ -113,7 +112,6 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       throw new Error('La API de SocialKit no devolvió un JSON válido.');
     }
     
-    // Extraemos los datos de la respuesta de SocialKit
     const dataObj = json.data || json;
     const downloadUrl = dataObj.download_url || dataObj.url || dataObj.play || dataObj.hdplay || '';
 
@@ -173,51 +171,6 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       success: false,
       error: error.message || 'Error interno al procesar el enlace con SocialKit.'
     });
-  }
-});
-
-// 3. API: Proxy de descarga blindado que valida que el video pese más de unos KB antes de enviarlo
-app.get('/api/download', async (req: Request, res: Response) => {
-  const mediaUrl = req.query.url as string;
-
-  if (!mediaUrl || !mediaUrl.startsWith('http')) {
-    res.status(400).send('URL de medio inválida o ausente.');
-    return;
-  }
-
-  try {
-    const videoRes = await fetch(mediaUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5',
-        'Referer': 'https://www.tiktok.com/'
-      }
-    });
-
-    if (!videoRes.ok) {
-      console.error(`Download upstream error status: ${videoRes.status}`);
-      res.redirect(mediaUrl);
-      return;
-    }
-
-    const arrayBuffer = await videoRes.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
-    // Si el archivo pesa menos de 10 KB, es una respuesta falsa o un error HTML, redirigimos como respaldo
-    if (buffer.length < 10240) {
-      console.warn(`Buffer too small (${buffer.length} bytes), falling back to direct redirect.`);
-      res.redirect(mediaUrl);
-      return;
-    }
-
-    res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Disposition', 'attachment; filename="tiktok-video.mp4"');
-    res.setHeader('Content-Length', buffer.length);
-
-    res.send(buffer);
-  } catch (err) {
-    console.error('Error in download proxy:', err);
-    res.redirect(mediaUrl);
   }
 });
 
