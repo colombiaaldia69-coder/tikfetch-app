@@ -59,7 +59,7 @@ app.get('/api/examples', (_req: Request, res: Response) => {
   res.json({ success: true, samples: SAMPLE_VIDEOS });
 });
 
-// 2. API: Parse TikTok URL correcting the endpoint to avoid 404
+// 2. API: Parse TikTok URL using SocialKit API
 app.post('/api/parse', async (req: Request, res: Response) => {
   try {
     const rawUrl = req.body?.url;
@@ -80,127 +80,91 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       return;
     }
 
-    // Resolve redirection if it's a short URL (vm.tiktok.com or vt.tiktok.com)
-    let finalUrl = cleanUrl;
-    try {
-      if (cleanUrl.includes('vm.tiktok.com') || cleanUrl.includes('vt.tiktok.com') || cleanUrl.includes('/t/')) {
-        const headRes = await fetch(cleanUrl, {
-          method: 'GET',
-          redirect: 'follow',
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-          }
-        });
-        if (headRes.url && headRes.url.includes('tiktok.com')) {
-          finalUrl = headRes.url;
-        }
-      }
-    } catch (redirectErr) {
-      console.warn('Could not follow redirect, will proceed with original URL:', redirectErr);
-    }
+    // Petición POST oficial a SocialKit
+    const socialKitEndpoint = 'https://api.socialkit.dev/tiktok/download';
+    const apiKey = process.env.SOCIALKIT_API_KEY || process.env.RAPIDAPI_KEY || '';
 
-    // Usamos el endpoint raíz limpio que es el que admiten estas APIs de RapidAPI
-    const rapidApiHost = 'tiktok-video-downloader-api.p.rapidapi.com';
-    const rapidApiEndpoint = `https://${rapidApiHost}/`; 
-
-    const response = await fetch(rapidApiEndpoint, {
+    const response = await fetch(socialKitEndpoint, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-rapidapi-key': process.env.RAPIDAPI_KEY || '',
-        'x-rapidapi-host': rapidApiHost
+        'x-api-key': apiKey,
+        'authorization': `Bearer ${apiKey}`
       },
-      body: JSON.stringify({ url: finalUrl })
+      body: JSON.stringify({ 
+        url: cleanUrl,
+        video_url: cleanUrl 
+      })
     });
 
     if (!response.ok) {
-      // Si el POST falla, probamos con el método GET estándar que aceptan la mayoría de estas APIs en RapidAPI
-      const getResponse = await fetch(`https://${rapidApiHost}/index?url=${encodeURIComponent(finalUrl)}`, {
-        method: 'GET',
-        headers: {
-          'x-rapidapi-key': process.env.RAPIDAPI_KEY || '',
-          'x-rapidapi-host': rapidApiHost
-        }
-      });
-
-      if (!getResponse.ok) {
-        throw new Error(`RapidAPI server responded with status: ${response.status}`);
-      }
-      
-      const jsonGet = await getResponse.json();
-      return handleApiResponse(jsonGet, finalUrl, res);
+      throw new Error(`SocialKit server responded with status: ${response.status}`);
     }
 
     const json = await response.json();
-    return handleApiResponse(json, finalUrl, res);
+    
+    // Extraemos los datos de la respuesta de SocialKit
+    const dataObj = json.data || json;
+    const downloadUrl = dataObj.download_url || dataObj.url || dataObj.play || '';
 
+    if (!downloadUrl) {
+      res.status(422).json({
+        success: false,
+        error: 'No se pudo obtener la URL de descarga desde SocialKit.'
+      });
+      return;
+    }
+
+    const result = {
+      id: String(dataObj.id || Date.now()),
+      url: cleanUrl,
+      title: String(dataObj.title || dataObj.description || 'Video de TikTok sin título'),
+      cover: String(dataObj.cover || dataObj.thumbnail || ''),
+      origin_cover: String(dataObj.cover || dataObj.thumbnail || ''),
+      duration: dataObj.duration || 0,
+      author: {
+        id: '',
+        unique_id: String(dataObj.author?.username || 'usuario'),
+        nickname: String(dataObj.author?.name || 'Creador de TikTok'),
+        avatar: String(dataObj.author?.avatar || '')
+      },
+      play: downloadUrl,
+      hdplay: downloadUrl,
+      wmplay: downloadUrl,
+      size: 0,
+      hd_size: 0,
+      music: '',
+      music_info: {
+        id: '',
+        title: 'Sonido original',
+        author: 'Artista',
+        play: '',
+        cover: ''
+      },
+      images: [],
+      stats: {
+        play_count: dataObj.stats?.plays || 0,
+        digg_count: dataObj.stats?.likes || 0,
+        comment_count: dataObj.stats?.comments || 0,
+        share_count: dataObj.stats?.shares || 0,
+        download_count: 0
+      },
+      create_time: 0,
+      region: ''
+    };
+
+    res.json({
+      success: true,
+      data: result
+    });
   } catch (error: any) {
     console.error('Error in /api/parse:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Error interno al procesar el enlace de TikTok.'
+      error: error.message || 'Error interno al procesar el enlace con SocialKit.'
     });
   }
 });
-
-function handleApiResponse(json: any, finalUrl: string, res: Response) {
-  const downloadUrl = json.downloadUrl || json.data?.downloadUrl || json.hdplay || json.play || (typeof json === 'string' ? json : json.url);
-
-  if (!downloadUrl) {
-    res.status(422).json({
-      success: false,
-      error: 'No se pudo obtener la URL de descarga del video. Asegúrate de que sea público.'
-    });
-    return;
-  }
-
-  const authorName = typeof json.author === 'string' 
-    ? json.author 
-    : (json.author?.nickname || json.author?.unique_id || 'Creador de TikTok');
-
-  const result = {
-    id: String(json.id || Date.now()),
-    url: finalUrl,
-    title: String(json.title || json.desc || 'Video de TikTok sin título'),
-    cover: String(json.cover || json.thumbnail || ''),
-    origin_cover: String(json.cover || json.thumbnail || ''),
-    duration: json.duration || 0,
-    author: {
-      id: '',
-      unique_id: String(json.author || 'usuario'),
-      nickname: String(authorName),
-      avatar: ''
-    },
-    play: downloadUrl,
-    hdplay: downloadUrl,
-    wmplay: downloadUrl,
-    size: 0,
-    hd_size: 0,
-    music: '',
-    music_info: {
-      id: '',
-      title: 'Sonido original',
-      author: 'Artista',
-      play: '',
-      cover: ''
-    },
-    images: [],
-    stats: {
-      play_count: 0,
-      digg_count: 0,
-      comment_count: 0,
-      share_count: 0,
-      download_count: 0
-    },
-    create_time: 0,
-    region: ''
-  };
-
-  res.json({
-    success: true,
-    data: result
-  });
-}
 
 // 3. API: Redirige directamente al CDN para la descarga
 app.get('/api/download', (req: Request, res: Response) => {
