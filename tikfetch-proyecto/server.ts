@@ -176,8 +176,8 @@ app.post('/api/parse', async (req: Request, res: Response) => {
   }
 });
 
-// 3. API: Proxy de descarga para forzar la bajada del archivo MP4 en el equipo
-app.get('/api/download', async (req: Request, res: Response) => {
+// 3. API: Redirección directa al CDN limpio para asegurar compatibilidad total del reproductor
+app.get('/api/download', (req: Request, res: Response) => {
   const mediaUrl = req.query.url as string;
 
   if (!mediaUrl || !mediaUrl.startsWith('http')) {
@@ -185,28 +185,8 @@ app.get('/api/download', async (req: Request, res: Response) => {
     return;
   }
 
-  try {
-    const videoResponse = await fetch(mediaUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-      }
-    });
-
-    if (!videoResponse.ok) {
-      res.redirect(mediaUrl);
-      return;
-    }
-
-    res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Disposition', 'attachment; filename="tiktok-video.mp4"');
-
-    const arrayBuffer = await videoResponse.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    res.send(buffer);
-  } catch (err) {
-    console.error('Error proxying download:', err);
-    res.redirect(mediaUrl);
-  }
+  // Redirigimos directamente al CDN oficial de video limpio para que el reproductor lo abra sin trabas
+  res.redirect(mediaUrl);
 });
 
 // Setup Vite or Static File Serving
