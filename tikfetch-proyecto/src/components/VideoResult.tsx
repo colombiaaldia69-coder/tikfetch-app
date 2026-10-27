@@ -10,7 +10,6 @@ import {
   MessageCircle,
   Eye,
   Clock,
-  Sparkles,
   ExternalLink,
   Layers,
   Volume2,
@@ -23,7 +22,6 @@ import {
   formatNumber,
   formatDuration,
   formatBytes,
-  getDownloadUrl,
   triggerDownloadSuccess
 } from '../utils/formatters';
 
@@ -61,34 +59,42 @@ export const VideoResult: React.FC<VideoResultProps> = ({
     }
   };
 
-  // Safe filename generator
   const baseFilename = `${video.author.unique_id}_${video.id}`;
 
-  // Safe in-app file downloader: saves file without leaving the page or blanking the screen
+  // Direct In-App File Downloader with direct CDN access & fail-safe opening
   const handleDownload = async (
     targetUrl: string,
     filename: string,
-    type: string,
+    _type: string,
     key: string,
-    fallbackUrl?: string
+    _fallbackUrl?: string
   ) => {
     if (downloadingKey) return;
     setDownloadingKey(key);
     setDownloadError(null);
 
-    const proxyUrl = getDownloadUrl(targetUrl, filename, type, fallbackUrl);
+    if (!targetUrl || !targetUrl.startsWith('http')) {
+      setDownloadError('Enlace de descarga no disponible.');
+      setDownloadingKey(null);
+      return;
+    }
 
     try {
-      // Fetch binary blob so the current browser window NEVER navigates away
-      const response = await fetch(proxyUrl);
+      // 1. Try fetching directly from the target CDN
+      const response = await fetch(targetUrl);
       if (!response.ok) {
-        throw new Error(`Servidor respondió con código ${response.status}`);
+        throw new Error(`Servidor CDN respondió con código ${response.status}`);
       }
 
       const blob = await response.blob();
+      
+      // If fetched blob is suspicious (< 10 KB), throw error to trigger direct browser open
+      if (blob.size < 10240) {
+        throw new Error('Respuesta inválida del servidor de origen.');
+      }
+
       const blobUrl = window.URL.createObjectURL(blob);
 
-      // Create download trigger anchor
       const a = document.createElement('a');
       a.href = blobUrl;
       a.download = filename;
@@ -100,11 +106,11 @@ export const VideoResult: React.FC<VideoResultProps> = ({
       setTimeout(() => window.URL.revokeObjectURL(blobUrl), 10000);
       triggerDownloadSuccess();
     } catch (err: any) {
-      console.warn('Blob download fetch error, using target="_blank" fallback:', err);
+      console.warn('Blob download fetch bypassed, opening direct CDN stream:', err);
       try {
-        // Fallback: opens in background without navigating the current window
+        // 2. Direct browser link trigger (opens clean direct CDN file in new tab/download)
         const fallbackA = document.createElement('a');
-        fallbackA.href = proxyUrl;
+        fallbackA.href = targetUrl;
         fallbackA.download = filename;
         fallbackA.target = '_blank';
         fallbackA.rel = 'noopener noreferrer';
@@ -114,7 +120,7 @@ export const VideoResult: React.FC<VideoResultProps> = ({
         document.body.removeChild(fallbackA);
         triggerDownloadSuccess();
       } catch (fallbackErr) {
-        setDownloadError('No se pudo descargar automáticamente. Por favor intenta con el Servidor 2.');
+        setDownloadError('No se pudo abrir la descarga automáticamente. Intenta con otra opción.');
       }
     } finally {
       setDownloadingKey(null);
@@ -124,7 +130,7 @@ export const VideoResult: React.FC<VideoResultProps> = ({
   return (
     <section className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
       <div className="bg-neutral-900/90 border border-neutral-800 rounded-2xl overflow-hidden shadow-2xl">
-        {/* Top bar of result card with creator info and reset button */}
+        {/* Top bar */}
         <div className="p-4 sm:p-6 border-b border-neutral-800/80 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="relative w-12 h-12 rounded-full overflow-hidden bg-neutral-800 border border-neutral-700 shrink-0">
@@ -161,7 +167,6 @@ export const VideoResult: React.FC<VideoResultProps> = ({
                 </a>
               </div>
 
-              {/* Clean unboxed metadata with separators */}
               <div className="flex items-center gap-2 text-xs text-neutral-400 mt-0.5">
                 <span>{isSlideshow ? `${video.images?.length} fotos` : 'Video TikTok'}</span>
                 {!isSlideshow && video.duration > 0 && (
@@ -194,13 +199,12 @@ export const VideoResult: React.FC<VideoResultProps> = ({
           </div>
         </div>
 
-        {/* Main Content: Split Grid */}
+        {/* Main Content */}
         <div className="p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-          {/* Left Column: Media Preview (Video Player or Slideshow) */}
+          {/* Left Column: Media Preview */}
           <div className="lg:col-span-5 flex flex-col items-center">
             <div className="relative w-full max-w-[360px] aspect-[9/16] bg-black rounded-xl overflow-hidden border border-neutral-800 shadow-lg">
               {isSlideshow && video.images && video.images.length > 0 ? (
-                // Slideshow Carousel Preview
                 <div className="relative w-full h-full flex flex-col justify-between">
                   <div className="relative flex-1 bg-black overflow-hidden flex items-center justify-center">
                     <img
@@ -214,7 +218,6 @@ export const VideoResult: React.FC<VideoResultProps> = ({
                     </div>
                   </div>
 
-                  {/* Slideshow Selector Navigation */}
                   <div className="p-2 bg-neutral-950/90 border-t border-neutral-800 flex items-center justify-between gap-1 overflow-x-auto">
                     {video.images.map((imgUrl, idx) => (
                       <button
@@ -237,7 +240,6 @@ export const VideoResult: React.FC<VideoResultProps> = ({
                   </div>
                 </div>
               ) : (
-                // HTML5 Video Player
                 <video
                   ref={videoRef}
                   src={bestVideoUrl}
@@ -250,7 +252,6 @@ export const VideoResult: React.FC<VideoResultProps> = ({
               )}
             </div>
 
-            {/* Quick action bar under preview */}
             <div className="mt-3 flex items-center gap-2 w-full max-w-[360px]">
               <button
                 onClick={handleCopyDirectLink}
@@ -280,15 +281,13 @@ export const VideoResult: React.FC<VideoResultProps> = ({
             </div>
           </div>
 
-          {/* Right Column: Actions, Downloads & Details */}
+          {/* Right Column: Downloads */}
           <div className="lg:col-span-7 flex flex-col gap-6">
-            {/* Title / Caption */}
             <div>
               <h2 className="text-lg sm:text-xl font-bold text-white leading-snug break-words">
                 {video.title || 'Video de TikTok'}
               </h2>
 
-              {/* Engagement statistics in tabular-nums */}
               <div className="mt-3 flex flex-wrap items-center gap-4 text-xs font-medium text-neutral-400">
                 <div className="flex items-center gap-1.5" title="Reproducciones">
                   <Eye className="w-4 h-4 text-neutral-500" />
@@ -321,7 +320,6 @@ export const VideoResult: React.FC<VideoResultProps> = ({
               </div>
             </div>
 
-            {/* Download Error Alert if any */}
             {downloadError && (
               <div className="p-3 bg-red-950/40 border border-red-800/60 rounded-xl flex items-center gap-2.5 text-xs text-red-200">
                 <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
@@ -329,14 +327,12 @@ export const VideoResult: React.FC<VideoResultProps> = ({
               </div>
             )}
 
-            {/* Primary Action Buttons Container */}
             <div className="space-y-3">
               <span className="text-xs font-bold uppercase tracking-wider text-neutral-400">
                 Opciones de Descarga Directa
               </span>
 
               {isSlideshow && video.images ? (
-                // Slideshow Downloads
                 <div className="space-y-3">
                   <button
                     type="button"
@@ -373,7 +369,6 @@ export const VideoResult: React.FC<VideoResultProps> = ({
                     </span>
                   </button>
 
-                  {/* Grid of all images for direct 1-click downloads */}
                   <div className="mt-4 p-4 bg-neutral-950/60 rounded-xl border border-neutral-800">
                     <div className="flex items-center justify-between mb-3">
                       <span className="text-xs font-semibold text-neutral-300 flex items-center gap-1.5">
@@ -409,9 +404,8 @@ export const VideoResult: React.FC<VideoResultProps> = ({
                   </div>
                 </div>
               ) : (
-                // Video Downloads
                 <div className="space-y-2.5">
-                  {/* 1. Main HD Video Button without Watermark (with automatic fallback to play URL) */}
+                  {/* 1. Main HD Video Button */}
                   <button
                     type="button"
                     disabled={downloadingKey !== null}
@@ -457,7 +451,7 @@ export const VideoResult: React.FC<VideoResultProps> = ({
                     )}
                   </button>
 
-                  {/* 2. Secondary Server / Standard MP4 (Always available as guaranteed fallback) */}
+                  {/* 2. Secondary Server */}
                   {video.play && (
                     <button
                       type="button"
@@ -495,7 +489,7 @@ export const VideoResult: React.FC<VideoResultProps> = ({
                     </button>
                   )}
 
-                  {/* 3. Watermarked MP4 if available */}
+                  {/* 3. Watermarked MP4 */}
                   {video.wmplay && (
                     <button
                       type="button"
@@ -525,7 +519,7 @@ export const VideoResult: React.FC<VideoResultProps> = ({
                 </div>
               )}
 
-              {/* 4. Audio MP3 Extraction Box */}
+              {/* 4. Audio MP3 */}
               {video.music && (
                 <div className="p-3.5 rounded-xl bg-neutral-950/70 border border-neutral-800 space-y-2.5">
                   <div className="flex items-center justify-between gap-3">
@@ -567,7 +561,6 @@ export const VideoResult: React.FC<VideoResultProps> = ({
                     </button>
                   </div>
 
-                  {/* Toggle audio preview */}
                   <div className="pt-1 flex items-center justify-between">
                     <button
                       onClick={() => setShowAudioPlayer(!showAudioPlayer)}
