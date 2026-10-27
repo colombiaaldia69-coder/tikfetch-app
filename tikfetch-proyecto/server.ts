@@ -13,14 +13,26 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.resolve(process.cwd(), 'public')));
 
-// Helper to extract TikTok URL from user string
+// Explicit PWA manifest & Service Worker routes for PWABuilder and browser crawlers
+app.get(['/manifest.json', '/manifest.webmanifest'], (_req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+  res.sendFile(path.resolve(process.cwd(), 'public/manifest.json'));
+});
+
+app.get('/sw.js', (_req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Service-Worker-Allowed', '/');
+  res.sendFile(path.resolve(process.cwd(), 'public/sw.js'));
+});
+
+// Extrae la URL de TikTok del input
 function extractTikTokUrl(input: string): string | null {
   if (!input || typeof input !== 'string') return null;
   const match = input.match(/https?:\/\/(?:[a-zA-Z0-9_-]+\.)?(?:tiktok\.com|douyin\.com)[^\s"'>]+/i);
   return match ? match[0] : null;
 }
 
-// Preset examples for quick testing
+// Ejemplos para la app
 const SAMPLE_VIDEOS = [
   {
     id: 'sample-1',
@@ -42,12 +54,38 @@ const SAMPLE_VIDEOS = [
   }
 ];
 
-// 1. API: Get sample videos
 app.get('/api/examples', (_req: Request, res: Response) => {
   res.json({ success: true, samples: SAMPLE_VIDEOS });
 });
 
-// 2. API: Parse TikTok URL directly without external API keys
+// Función para extraer video directo mediante la API publica de Tikwm (Gratuita y sin API key)
+async function fetchTikTokVideo(tiktokUrl: string) {
+  const formData = new URLSearchParams();
+  formData.append('url', tiktokUrl);
+  formData.append('hd', '1');
+
+  const response = await fetch('https://www.tikwm.com/api/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    },
+    body: formData.toString()
+  });
+
+  if (!response.ok) {
+    throw new Error(`Error en el servidor parser: ${response.status}`);
+  }
+
+  const json = await response.json();
+  if (json.code !== 0 || !json.data) {
+    throw new Error(json.msg || 'No se pudo procesar este video de TikTok.');
+  }
+
+  return json.data;
+}
+
+// 2. API: Parse TikTok URL
 app.post('/api/parse', async (req: Request, res: Response) => {
   try {
     const rawUrl = req.body?.url;
@@ -68,79 +106,50 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       return;
     }
 
-    // Resolve redirection if it's a short URL (vm.tiktok.com or vt.tiktok.com)
-    let finalUrl = cleanUrl;
-    try {
-      const headRes = await fetch(cleanUrl, {
-        method: 'GET',
-        redirect: 'follow',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-      });
-      if (headRes.url && headRes.url.includes('tiktok.com')) {
-        finalUrl = headRes.url;
-      }
-    } catch (redirectErr) {
-      console.warn('Could not follow redirect:', redirectErr);
-    }
+    // Procesa el enlace con la API directa sin llaves
+    const data = await fetchTikTokVideo(cleanUrl);
 
-    // Extracción limpia usando oEmbed oficial y métodos públicos de TikTok
-    let videoTitle = 'Video de TikTok sin marca de agua';
-    let authorName = 'Creador de TikTok';
-    let coverImage = '';
-
-    try {
-      const oembedRes = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(finalUrl)}`);
-      if (oembedRes.ok) {
-        const oembedData = await oembedRes.json();
-        if (oembedData.title) videoTitle = oembedData.title;
-        if (oembedData.author_name) authorName = oembedData.author_name;
-        if (oembedData.thumbnail_url) coverImage = oembedData.thumbnail_url;
-      }
-    } catch (e) {
-      console.warn('No se pudo obtener oEmbed:', e);
-    }
-
-    // Generamos un enlace directo funcional para el usuario
-    const directPlayUrl = finalUrl;
+    // Construir URLs absolutas si vienen relativas de TikWM
+    const playUrl = data.play.startsWith('http') ? data.play : `https://www.tikwm.com${data.play}`;
+    const hdPlayUrl = data.hdplay && data.hdplay.startsWith('http') ? data.hdplay : (data.hdplay ? `https://www.tikwm.com${data.hdplay}` : playUrl);
+    const coverUrl = data.cover.startsWith('http') ? data.cover : `https://www.tikwm.com${data.cover}`;
 
     const result = {
-      id: String(Date.now()),
-      url: finalUrl,
-      title: String(videoTitle),
-      cover: String(coverImage || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&auto=format&fit=crop&q=60'),
-      origin_cover: String(coverImage),
-      duration: 15,
+      id: String(data.id || Date.now()),
+      url: cleanUrl,
+      title: String(data.title || 'Video de TikTok sin título'),
+      cover: coverUrl,
+      origin_cover: coverUrl,
+      duration: data.duration || 0,
       author: {
-        id: '',
-        unique_id: String(authorName),
-        nickname: String(authorName),
-        avatar: ''
+        id: String(data.author?.id || ''),
+        unique_id: String(data.author?.unique_id || 'usuario'),
+        nickname: String(data.author?.nickname || 'Creador de TikTok'),
+        avatar: String(data.author?.avatar || '')
       },
-      play: directPlayUrl,
-      hdplay: directPlayUrl,
-      wmplay: directPlayUrl,
-      size: 0,
-      hd_size: 0,
-      music: '',
+      play: playUrl,
+      hdplay: hdPlayUrl,
+      wmplay: playUrl,
+      size: data.size || 0,
+      hd_size: data.hd_size || 0,
+      music: data.music || '',
       music_info: {
-        id: '',
-        title: 'Sonido original',
-        author: authorName,
-        play: '',
-        cover: ''
+        id: String(data.music_info?.id || ''),
+        title: String(data.music_info?.title || 'Sonido original'),
+        author: String(data.music_info?.author || 'Artista'),
+        play: String(data.music_info?.play || ''),
+        cover: String(data.music_info?.cover || '')
       },
-      images: [],
+      images: data.images || [],
       stats: {
-        play_count: 0,
-        digg_count: 0,
-        comment_count: 0,
-        share_count: 0,
-        download_count: 0
+        play_count: data.play_count || 0,
+        digg_count: data.digg_count || 0,
+        comment_count: data.comment_count || 0,
+        share_count: data.share_count || 0,
+        download_count: data.download_count || 0
       },
-      create_time: 0,
-      region: ''
+      create_time: data.create_time || 0,
+      region: data.region || ''
     };
 
     res.json({
@@ -156,14 +165,37 @@ app.post('/api/parse', async (req: Request, res: Response) => {
   }
 });
 
-// 3. API: Redirige directamente al navegador
-app.get('/api/download', (req: Request, res: Response) => {
+// 3. API: Proxy de descarga para descargar directamente el MP4 en el dispositivo
+app.get('/api/download', async (req: Request, res: Response) => {
   const mediaUrl = req.query.url as string;
+
   if (!mediaUrl || !mediaUrl.startsWith('http')) {
     res.status(400).send('URL de medio inválida o ausente.');
     return;
   }
-  res.redirect(mediaUrl);
+
+  try {
+    const videoResponse = await fetch(mediaUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      }
+    });
+
+    if (!videoResponse.ok) {
+      res.redirect(mediaUrl);
+      return;
+    }
+
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', 'attachment; filename="tiktok-video.mp4"');
+
+    const arrayBuffer = await videoResponse.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    res.send(buffer);
+  } catch (err) {
+    console.error('Error proxying download:', err);
+    res.redirect(mediaUrl);
+  }
 });
 
 // Setup Vite or Static File Serving
