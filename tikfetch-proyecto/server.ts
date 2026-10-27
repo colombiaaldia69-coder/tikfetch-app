@@ -80,7 +80,7 @@ app.post('/api/parse', async (req: Request, res: Response) => {
       return;
     }
 
-    // Petición POST oficial a SocialKit con múltiples variantes de cabeceras de autenticación
+    // Petición POST oficial a SocialKit
     const socialKitEndpoint = 'https://api.socialkit.dev/tiktok/download';
     const apiKey = process.env.SOCIALKIT_API_KEY || process.env.RAPIDAPI_KEY || '';
 
@@ -176,8 +176,8 @@ app.post('/api/parse', async (req: Request, res: Response) => {
   }
 });
 
-// 3. API: Redirige directamente al CDN para la descarga
-app.get('/api/download', (req: Request, res: Response) => {
+// 3. API: Proxy de descarga para forzar la bajada del archivo MP4 en el equipo
+app.get('/api/download', async (req: Request, res: Response) => {
   const mediaUrl = req.query.url as string;
 
   if (!mediaUrl || !mediaUrl.startsWith('http')) {
@@ -185,7 +185,28 @@ app.get('/api/download', (req: Request, res: Response) => {
     return;
   }
 
-  res.redirect(mediaUrl);
+  try {
+    const videoResponse = await fetch(mediaUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      }
+    });
+
+    if (!videoResponse.ok) {
+      res.redirect(mediaUrl);
+      return;
+    }
+
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', 'attachment; filename="tiktok-video.mp4"');
+
+    const arrayBuffer = await videoResponse.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    res.send(buffer);
+  } catch (err) {
+    console.error('Error proxying download:', err);
+    res.redirect(mediaUrl);
+  }
 });
 
 // Setup Vite or Static File Serving
