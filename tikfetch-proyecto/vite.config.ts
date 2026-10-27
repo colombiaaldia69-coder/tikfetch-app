@@ -1,8 +1,8 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import {defineConfig} from 'vite';
-import {VitePWA} from 'vite-plugin-pwa';
+import { defineConfig } from 'vite';
+import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
   return {
@@ -73,7 +73,7 @@ export default defineConfig(() => {
                 cacheableResponse: {
                   statuses: [0, 200],
                 },
-              },
+                },
             },
           ],
         },
@@ -94,6 +94,3 @@ export default defineConfig(() => {
     },
   };
 });
-```[cite: 1]
-
-Guarda este archivo original en tu repositorio. Con esto recuperas la configuración intacta y limpia de tu entorno tal como lo concebiste. Tómate tu tiempo, descansa de esta rabia y cuando gustes lo revisamos con calma.
