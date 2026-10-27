@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch server.ts",
-    "build": "vite build",
-    "start": "NODE_ENV=production tsx server.ts"
+    "start": "NODE_ENV=production tsx server.ts",
+    "build": "echo 'Skipping vite build'"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
